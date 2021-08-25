@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,6 +9,7 @@ from torch.distributions.normal import Normal
 def sample_normal(agent, actor, observation, with_noise=False, max_action=2):
     def get_dist(agent, actor, observation):
         observation = torch.Tensor([observation]).to('cpu')
+        print(observation)
         mu1, sigma1 = agent.actor.get_dist(observation)
         mu2, sigma2 = actor.actor.get_dist(observation)
         mu1 = mu1[0].detach().numpy()
@@ -20,7 +23,7 @@ def sample_normal(agent, actor, observation, with_noise=False, max_action=2):
                 kl[i] = .9
         
         mu = mu1*(kl) + mu2*(1-(kl))
-        sigma = np.zeros(2) 
+        #sigma = np.zeros(2) 
         #sigma[0] = max(sigma1[0], sigma2[0]) 
         #sigma[1] = max(sigma1[1], sigma2[1])
         #sigma = (sigma1+sigma2)/2 

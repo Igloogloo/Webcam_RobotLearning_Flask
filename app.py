@@ -1,7 +1,9 @@
-import os, glob
-from typing import MutableMapping
+#!/usr/bin/env python
+
+import os
 import cv2
 import csv
+import sys
 
 from flask import Flask, request, render_template, Response, redirect, session,send_from_directory
 from flask_wtf import FlaskForm
@@ -11,7 +13,7 @@ import numpy as np
 import gym
 from gym import wrappers
 import torch
-
+sys.path.append("uid")
 import time
 
 from PIL import Image
@@ -20,10 +22,14 @@ from PS_utils import sample_normal
 from sac_torch import Agent
 
 import gym, random, pickle, os.path, math, glob
-import stopwatch as SW
+from stopwatch import Stopwatch as SW
 
-from uid.uuid_manager import uuid_manager
+from uuid_manager import uuid_manager
 uuid_manager = uuid_manager()
+
+from balance_toy import BalanceToy
+from scipy.special import expit
+from sklearn.preprocessing import normalize
 
 from functools import wraps
 
@@ -42,7 +48,7 @@ TEMPLATE_PATH = os.path.join(DIR_PATH, 'templates/')
 #virtual_display = Display(visible=0, size=(1400, 900))
 #virtual_display.start()
 
-with open(f"session_is_active.csv", mode='w', newline='') as csvfile:  
+with open("session_is_active.csv", mode='wb') as csvfile:  
         csvwriter = csv.writer(csvfile)  
         csvwriter.writerow([0]) 
         csvfile.close()
@@ -92,12 +98,12 @@ def info():
 def index_uuid(uuid):
     if uuid in session:
         if session[uuid].get('agreed'):
-            feed_filename = f"feedback_data/participant_{uuid}.csv"
-            with open(feed_filename, "x", newline='') as csvfile:
+            feed_filename = "feedback_data/participant_%s.csv" % uuid
+            with open(feed_filename, "a+") as csvfile:
                 print("Done")
             learning_loop(uuid)
             #multiprocessing.Process(target = learning_loop, args=(uuid)).start()
-            return render_template("simulation.html", render=f"render_{uuid}", uuid=uuid)
+            return render_template("simulation.html", render="render_%s" % uuid, uuid=uuid)
         else:
             return render_template("excluded_participant.html")
     session['uuid'] = uuid
@@ -105,7 +111,7 @@ def index_uuid(uuid):
 
 @app.route('/finish/<uuid>', methods=['GET', 'POST'])
 def finish(uuid):
-    with open(f"session_is_active.csv", mode='w', newline='') as csvfile:  
+    with open("session_is_active.csv", mode='wb') as csvfile:  
         csvwriter = csv.writer(csvfile)  
         csvwriter.writerow([0]) 
         csvfile.close()
@@ -116,7 +122,7 @@ def finish(uuid):
 @app.route('/send_good_feedback/<uuid>')
 def send_good_feedback(uuid):
     #filename = "participant_data.csv"
-    with open(f"feedback_data/participant_{uuid}.csv", 'a', newline='') as csvfile:  
+    with open("feedback_data/participant_%s.csv" % uuid, 'ab') as csvfile:  
         csvwriter = csv.writer(csvfile)  
         csvwriter.writerow(["1", time.time()*1000]) 
         csvfile.close()
@@ -125,7 +131,7 @@ def send_good_feedback(uuid):
 @app.route('/send_bad_feedback/<uuid>')
 def send_bad_feedback(uuid):
     #filename = "participant_data.csv"
-    with open(f"feedback_data/participant_{uuid}.csv", 'a', newline='') as csvfile:  
+    with open("feedback_data/participant_%s.csv" % uuid, 'ab') as csvfile:  
         csvwriter = csv.writer(csvfile)  
         csvwriter.writerow(["-1", time.time()*1000]) 
         csvfile.close()
@@ -134,7 +140,7 @@ def send_bad_feedback(uuid):
 @app.route('/send_no_feedback/<uuid>')
 def send_no_feedback(uuid):
     #filename = "participant_data.csv"
-    with open(f"feedback_data/participant_{uuid}.csv", 'a', newline='') as csvfile:  
+    with open("feedback_data/participant_%s.csv" % uuid, 'ab') as csvfile:  
         csvwriter = csv.writer(csvfile)  
         csvwriter.writerow(["0", time.time()*1000]) 
         csvfile.close()
@@ -154,7 +160,7 @@ def frame_gen(env_func, *args, **kwargs):
 def render_browser(env_func):
         def wrapper(*args, **kwargs):
             @wraps(wrapper)
-            @app.route(f"/render_feed/{session['uuid']}", endpoint=f"render_{session['uuid']}")
+            @app.route("/render_feed/%s" % session['uuid'], endpoint="render_%s" % session['uuid'])
             def render_feed():
                 return Response(frame_gen(env_func, *args, **kwargs), mimetype='multipart/x-mixed-replace; boundary=frame')
         return wrapper
@@ -163,6 +169,7 @@ def gen_frames():  # generate frame by frame from camera
     while True:
         # Capture frame-by-frame
         success, frame = camera.read()  # read the camera frame
+        time.sleep(.01)
         if not success:
             break
         else:
@@ -179,7 +186,7 @@ def video_feed():
 
 @render_browser
 def learning_loop(uuid, end=False):
-    with open(f"session_is_active.csv", mode='w', newline='') as csvfile:  
+    with open("session_is_active.csv", mode='wb') as csvfile:  
         csvwriter = csv.writer(csvfile)  
         csvwriter.writerow([1]) 
         csvfile.close()
@@ -188,7 +195,7 @@ def learning_loop(uuid, end=False):
         img = Image.open("thankYou2.jpg")
         arr = np.array(img)
         yield arr
-        return True
+        return 
     class ActionQueue:
         def __init__(self, size=5):
             self.size = size
@@ -221,12 +228,11 @@ def learning_loop(uuid, end=False):
 
     #env = gym.make('BipedalWalker-v3')
     
-    env = gym.make('LunarLanderContinuous-v2')
-    env.viewer = None
+    env = BalanceToy(stack_size=3, with_pixels=False, max_action=1, max_action_true=20, camera=camera)
     #env = wrappers.Monitor(env, "media", video_callable=False, force=True)
     
-    rew_filename = f"reward_data/participant_{uuid}.csv"
-    with open(rew_filename, "x", newline='') as csvfile:
+    rew_filename = "reward_data/participant_%s.csv" % uuid
+    with open(rew_filename, "a+") as csvfile:
         print("Done")
 
     # Note: these credit assignment intervals impact how the agent behaves a lot.
@@ -234,7 +240,7 @@ def learning_loop(uuid, end=False):
     # There is a frame time delay of .1 so teaching is not boring. Could make the 
     # the agent much better if played at around 10 frames per second (not sure of  current fps)
     interval_min = .1
-    interval_max = .8
+    interval_max = 2
 
     episodes=500
     USE_CUDA = torch.cuda.is_available()
@@ -249,16 +255,14 @@ def learning_loop(uuid, end=False):
     win_break = True
     queue_size = 1000
 
-    agent = Agent(alpha=.001, beta=.001, max_size=100000, input_dims=env.observation_space.shape, env=env,
-                n_actions=env.action_space.shape[0], reward_scale=10)
+    agent = Agent(alpha=0.001, beta=0.001, input_dims=env.observation_space[0], env=env, batch_size=256,
+            tau=.02, max_size=100000, layer1_size=256, layer2_size=256, n_actions=env.action_space, reward_scale=10, auto_entropy=False)
 
-    actor = Agent(alpha=.001, beta=.001,input_dims=env.observation_space.shape, env=env,
-                n_actions=env.action_space.shape[0], reward_scale=2)
+    actor = Agent(alpha=0.001, beta=0.001, input_dims=env.observation_space[0], env=env, batch_size=256,
+            tau=.02, max_size=100000, layer1_size=256, layer2_size=256, n_actions=env.action_space, reward_scale=2, auto_entropy=False)
 
     agent.critic_1 = actor.critic_1
     actor.critic_2 = agent.critic_2
-
-    frame = env.reset()
 
 
     episode_rewards = []
@@ -268,7 +272,7 @@ def learning_loop(uuid, end=False):
     episode_num = 0
     is_win = False
 
-    stopwatch = SW.Stopwatch()
+    stopwatch = SW()
 
     cnt=0
     start_f=0
@@ -280,7 +284,7 @@ def learning_loop(uuid, end=False):
     e = 0.05
     render = True
     
-    timeout = time.time() + 60*15  # length of interaction
+    timeout = time.time() + 60*100  # length of interaction
 
     true_done = False
     while time.time() < timeout and true_done == False:
@@ -292,6 +296,8 @@ def learning_loop(uuid, end=False):
         #yield scene
         #time.sleep(3)
         observation = env.reset()
+        observation = observation.astype('float32')
+        observation = observation/np.linalg.norm(observation)*100
         ep_rewards = 0
         feedback_value = 0
         tf = 0
@@ -302,12 +308,14 @@ def learning_loop(uuid, end=False):
             #scene = env.render(mode='rgb_array')
             #yield scene
             end_f+=1
-            ts = stopwatch.duration
-            action, dist, mu, sigma = sample_normal(agent, actor, observation, with_noise=False, max_action=env.action_space.high)
+            ts = stopwatch.duration()
+            action, dist, mu, sigma = sample_normal(agent, actor, observation, with_noise=False)
             #action, dist, mu, sigma = agent.sample_action(observation)
             #print(action)
             old_observation = observation
             observation, reward, done, _ = env.step(action)
+            observation = observation.astype('float32')
+            observation = observation/np.linalg.norm(observation)*100
             actor.remember(old_observation, action, reward, observation, done)
             episode_rewards.append(reward)
             ep_rewards += reward
@@ -315,7 +323,7 @@ def learning_loop(uuid, end=False):
             #feedback_value = 0 # uncomment for sparse feedback
             time.sleep(e) # Delay to make the game seeable
             feedback = ""
-            all_feedback = np.genfromtxt(f"feedback_data/participant_{uuid}.csv", delimiter=',')
+            all_feedback = np.genfromtxt("feedback_data/participant_%s.csv" % uuid, delimiter=',')
 
             if len(all_feedback) > 0:
                 if len(all_feedback) == 2 and np.size(all_feedback) == 2:
@@ -345,11 +353,11 @@ def learning_loop(uuid, end=False):
             actor.learn()
             agent.learn()
 
-            if stopwatch.duration > 60:
-                done = True
-
+            #if stopwatch.duration > 60:
+                #done = True
+            print("DONE, ", done )
             if done:
-                with open(rew_filename, 'a', newline='') as csvfile:  
+                with open(rew_filename, 'ab') as csvfile:  
                     csvwriter = csv.writer(csvfile)  
                     csvwriter.writerow([episode_num, ep_rewards]) 
                     csvfile.close()                                                         
@@ -372,15 +380,14 @@ def learning_loop(uuid, end=False):
                 break         
             
     finished = True
-    env.close()
     img = Image.open("thankYou2.jpg")
     arr = np.array(img)
     yield arr
-    with open(f"session_is_active.csv", mode='w', newline='') as csvfile:  
+    with open("session_is_active.csv", mode='wb') as csvfile:  
         csvwriter = csv.writer(csvfile)  
         csvwriter.writerow([0]) 
         csvfile.close()
-    return True
+    
 
 
 if __name__ == '__main__':
